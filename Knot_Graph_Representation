@@ -1,0 +1,147 @@
+
+import pandas as pd
+import json
+import sys
+import importlib
+sys.path.append(r'C:\Users\NJE_1\Downloads\geometricDeepLearningKnotData-main')
+import planarDiagram
+importlib.reload(planarDiagram)
+from planarDiagram import Knot# type: ignore
+from planarDiagram import Crossing# type: ignore
+import knotGraph
+importlib.reload(knotGraph)
+from knotGraph import graphRepresentation # type: ignore
+from torch_geometric.utils import degree, from_networkx
+import networkx as nx
+import numpy as np
+#importlib.reload(settings)
+import settings
+from settings import *  # type: ignore
+from dataset import fetchDataset
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
+import networkx as nx
+
+
+knotinfo = pd.DataFrame(pd.read_csv(PATH, sep = ",", header = 0, index_col = False))#[0:80000]
+    
+knotinfo.reindex(np.random.permutation(knotinfo.index))
+knotinfo = knotinfo[0:9000]
+knot_dataset = knotinfo.reset_index(drop=True)
+
+knotinfo["PD Notation_st"] =  knotinfo["PD Notation"].map(lambda knot:json.loads(knot.replace(";",",")))
+
+
+### Aquí estamos creando los paths de los nodos
+nodes = 0
+edges = []
+result = [[num - 1 for num in sublist] for sublist in knotinfo["PD Notation_st"][0]]
+for l in list(result):
+    edges = edges + l
+edges = set(edges) # {1, 2, 3, 4, 5, 6, 7, 8}
+path = [] # [[0, 1], [0, 3], [2, 3], [0, 2], [0, 1], [1, 2], [2, 3], [1, 3]]
+for edge in edges:
+    temp = []
+    node = 0
+    for l1 in list(result):
+        if edge in l1:
+            temp.append(node)
+        node = node + 1
+    path.append(temp)
+
+### generate a path for digraph (reversing list)
+path_di = []
+for p in path:
+    if p in path_di:
+        p.reverse()
+    path_di.append(p)
+
+## Creamos a di graph
+p_ = [(0, 1), (0, 3), (0, 2), (1, 0), (1, 2), (1, 3), (3, 2), (2, 3),(3,1),(2,1),(2,0),(3,0)]
+G = nx.DiGraph(p_)
+G.edges()
+c = []
+# Find all simple cycles in the graph
+for cycle_ in nx.simple_cycles(G):
+    # Filter cycles that consist of only two items that are represented in the original path
+    if len(cycle_) == 2:
+        if [cycle_[0], cycle_[1]] in list(path_di) and [cycle_[1], cycle_[0]] in list(path_di):
+            c.append(sorted(cycle_))
+    elif len(cycle_) != len(G.nodes()):
+        c.append(sorted(cycle_))
+
+# Convert the cycles to a set of tuples for uniqueness
+cycles_set = set(tuple(row) for row in c)
+cycle_ = []
+for c_ in cycles_set:
+    cycle_.append(list(c_))
+
+# Convert the cycles to sets for uniqueness and sorting
+cycles_sets = [set(zip(cycle, cycle[1:] + cycle[:1])) for cycle in cycle_]
+
+
+
+
+knotinfo["knot"] = knotinfo['PD Notation'].map(lambda knot:json.loads(knot.replace(";",","))).map(Knot) #[[4, 2, 5, 1], [8, 6, 1, 5], [6, 3, 7, 4]
+k = knotinfo["knot"][0]
+
+k.relableKnot() ## se utiliza para renombrar los paths, es decir si tenemos este crossing [4, 2, 5, 1], entonces le disminuiremos uno [3, 1, 4, 0]
+
+knotFaces = []
+for path in k.paths(): ## path are the edges
+    face = set(k.facingPaths(path))
+    if not face in knotFaces:
+        knotFaces.append(face)
+
+
+def delta(path):
+    first_crossing, second_crossing = k.findCrossingWithPath(path)
+    print("first_crossing")
+    print(first_crossing)
+    print(first_crossing.pathGoesOver(path))
+    print("second_crossing")
+    print(second_crossing)
+    print(second_crossing.pathGoesOver(path))
+    
+    return 1. if first_crossing.pathGoesOver(path) ^ second_crossing.pathGoesOver(path) else -1.0
+    # ^ = xor returns difference
+    
+
+max_path = max(k.paths()) + 1 # +1 bcs relable knot starts relabeling at 0 so plus one
+
+def distance(path):
+    first_crossing, second_crossing = k.findCrossingWithPath(path)
+    first_crossing_path = (first_crossing.corresponceRotationPath(path, rotation=1) + first_crossing.corresponceRotationPath(path, rotation=-1))
+    second_crossing_path = (second_crossing.corresponceRotationPath(path, rotation=1) + second_crossing.corresponceRotationPath(path, rotation=-1))
+    dist = (abs(first_crossing_path - second_crossing_path )//2)%(max_path//2)
+    return dist
+
+def getKnotFaces(path):
+    return list(filter(lambda knotFace: path in knotFace, knotFaces))
+
+graph = nx.Graph()
+for knotFace in knotFaces:
+    graph.add_nodes_from(
+        [knotFaces.index(knotFace)],
+        x=[
+            float(sum([delta(path) for path in knotFace]))
+        ]
+    )
+
+distance_activation = lambda x: np.float(1 - np.exp(-x*(np.log(2)/15))) 
+for path in k.paths():
+    print(path)
+    face1, face2 = getKnotFaces(path)
+    graph.add_edges_from(
+        [
+            (knotFaces.index(face1), knotFaces.index(face2),
+            {"edge_attr":
+                (
+                    distance_activation(distance(path)),
+                    delta(path),
+                    # float(distance(path)%2)
+                )
+            })
+        ]
+    )
